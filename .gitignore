@@ -1,0 +1,9 @@
+*.class
+build/
+.idea/
+.idea/*
+.history
+target
+*.iml
+*.log
+*.bak
