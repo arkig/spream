@@ -6,7 +6,7 @@ import org.specs2.Specification
 import spream.PartitionLocation
 import MovingWindowPartitioning.IntervalSets
 import PartitionLocation.EnumVal
-import org.apache.spark.{RangePartitioning, SharedSparkContext}
+import org.apache.spark.{SparkContext, LocalSparkContext, RangePartitioning, SharedSparkContext}
 
 // Declare outside test class to avoid serialisation due to closure
 object Container {
@@ -66,7 +66,6 @@ object Container {
 
 class MovingWindowPartitioningSuite extends FunSuite with SharedSparkContext with PrivateMethodTester {
 
-
   test("MovingWindowPartitioning manual and random data") {
 
     val rdd = sc.makeRDD(0 until 20, 20).flatMap { i =>
@@ -94,10 +93,10 @@ class MovingWindowPartitioningSuite extends FunSuite with SharedSparkContext wit
     Container.checkBetweenPartitions(currentBounds)
   }
 
-  def rdd1(partitions : Int) = sc.makeRDD(0 until 20, partitions)
-    .flatMap { i => (i until 2*i+10)}
-    .map(i => (i,())).sortBy(_._1).cache()
-
+  def rdd1(partitions : Int) =
+    sc.makeRDD(0 until 20, partitions)
+      .flatMap { i => (i until 2*i+10)}
+      .map(i => (i,())).sortBy(_._1).cache()
 
   test("MovingWindowPartitioning.movingWindowPartitioned fixed data") {
     val rdd = rdd1(20)
@@ -179,7 +178,7 @@ class DuplicateToIntervalsIteratorSpec extends Specification {
   def t4 = {
     val values = gen(List(10,15,20))
     val r = evaluate(values.iterator)
-    println(r.mkString("\n"))
+    //println(r.mkString("\n"))
     r.must_==(gen(List(
       PartitionedSeriesKey(0,10,F),
       PartitionedSeriesKey(1,10,C),

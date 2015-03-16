@@ -199,3 +199,6 @@ trait UsefulProcessors {
 
 }
 
+//TODO serializable only necessary here because this is used within Spark mapPartitions ...
+object UsefulProcessors extends UsefulProcessors //with Serializable
+

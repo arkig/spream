@@ -37,3 +37,7 @@ libraryDependencies ++= Seq(
 scalaVersion := "2.10.4"
 
 scalacOptions ++= Seq("-deprecation", "-unchecked", "-Xlint")
+
+// Overkill. Necessary to prevent Spark test suits running in parallel (causes issues).
+// All specs are fine to run in parallel.
+parallelExecution in Test := false

@@ -73,7 +73,7 @@ class UsefulProcessorsSpec extends Specification with UsefulProcessors { def is 
     val in = emitAll((1 to 17).toSeq).toSource
     val res = (in |> p).runLog.run
 
-    println(res)
+    //println(res)
     res must_== Vector(6,6,6,10,28,28,28,36,66,66,66,78,120,120,120,136)
   }
 
@@ -94,7 +94,7 @@ class UsefulProcessorsSpec extends Specification with UsefulProcessors { def is 
 
     val res = (in |> p).runLog.run
 
-    println(res)
+    //println(res)
     res must_== (1 to 10).toVector
 
   }
