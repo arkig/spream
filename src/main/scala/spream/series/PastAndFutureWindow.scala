@@ -26,7 +26,8 @@ import scala.collection.SeqView
  * TODO consider whether this should be Serializable. Must be careful in allowing this because the whole point of using
  * an immutable vector is that previous versions of it are effectively reused in previous windows, so a stream of these things
  * uses less memory that one might first suspect. Serialization is required for sending prototypes over the wire (for asProcess1 etc),
- * but it then also allows an RDD of windows to be serialized.
+ * but it then also allows an RDD of windows to be serialized - which we don't need to do (and indicates inefficient usage - like RDD.map
+ * rather than process1.map).
  */
 abstract class BoundedPastAndFutureWindow[K : Ordering : Numeric : ClassTag, V : ClassTag, P <: Product2[K,V] : ClassTag](
           nowIndex : Option[Int] = None, window : Vector[P] = Vector.empty) extends Serializable
@@ -153,6 +154,7 @@ object BoundedPastAndFutureWindow {
  * Note: similar for past (if relying on pastFull), except that past() contains now().
  *
  * TODO consider measuring future() span from now()! makes more sense if doing atFutureOffset etc...
+ * TODO make the (current) crossing of the boundary (required for last-known-value interpolation) optional.
  *
  * @param minPastWidth minimum span of past(). Once filled, past() will be at least as long as required so that atPastOffset(minPastWidth) will return an entry
  *                     closest (from below) or equal to now()._1 - minPastWidth. Past can be shorter if no values have yet been seen that
