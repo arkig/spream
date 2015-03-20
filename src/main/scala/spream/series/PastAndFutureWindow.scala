@@ -299,12 +299,16 @@ object ValueBoundedPastAndFutureWindow {
 object ValueBoundedPastAndFutureWindowProcessors extends UsefulProcessors with Util with Serializable
 {
 
+  private def pastFullFilter[K, V, P <: Product2[K,V]](pastFull : Boolean)(w : ValueBoundedPastAndFutureWindow[K,V,P]) =
+    w.pastFull || !pastFull
+
   /**
    * Turns a stream of values into a stream of windows.
    * @param w prototype
    * @param pastFull whether to filter out windows where past() is not "full"
    */
   def asProcess1[K : Ordering : Numeric : ClassTag, V : ClassTag, P <: Product2[K,V] : ClassTag](w : ValueBoundedPastAndFutureWindow[K,V,P], pastFull : Boolean = false): Process1[P, ValueBoundedPastAndFutureWindow[K, V, P]] = {
+
     val zero = w
     def op(w : ValueBoundedPastAndFutureWindow[K,V,P], r : P) = w.updated(r)
 
@@ -312,7 +316,31 @@ object ValueBoundedPastAndFutureWindowProcessors extends UsefulProcessors with U
       val nw = w.moved()
       (nw.getOrElse(w),nw)
     }
-    accumulateAndExtractAll1(op,zero,extract).filter(_.pastFull || !pastFull)
+    accumulateAndExtractAll1(op,zero,extract).filter(pastFullFilter(pastFull) _)
+  }
+
+  private def trackStartEndZero[K] : (Option[K],Option[K]) = (None,None)
+
+  // Maintain current [start,end) interval state
+  private def trackStartEndOp[K,V](state : (Option[K],Option[K]), r : (PartitionedSeriesKey[K],V)) : (Option[K],Option[K]) = {
+
+    //k s.t. first time seen Current
+    val start = if (state._1.isEmpty && r._1.location == PartitionLocation.Current) Some(r._1.key) else state._1
+
+    //k s.t. first time seen Future
+    val end = if (state._2.isEmpty && r._1.location == PartitionLocation.Future) Some(r._1.key) else state._2
+
+    (start,end)
+  }
+
+  // Filter s.t. now is in [start,end) interval
+  private def trackStartEndFilter[K : Ordering : Numeric](state : (Option[K],Option[K]), now : Option[K]) : Boolean = {
+    val num = implicitly[Numeric[K]]
+    val (start,end) = state
+    now.map { case k =>
+      start.map(num.gteq(k,_)).getOrElse(false) &&
+        end.map(num.lt(k,_)).getOrElse(true)
+    }.getOrElse(false)
   }
 
   /**
@@ -320,39 +348,33 @@ object ValueBoundedPastAndFutureWindowProcessors extends UsefulProcessors with U
    * @param w prototype
    * @param pastFull whether to filter out windows where past() is not "full"
    */
-  def fromPartitionAsProcess1[K : Ordering : Numeric : ClassTag, V : ClassTag](w : ValueBoundedPastAndFutureWindow[K,V,(K,V)], pastFull : Boolean = false): Process1[(PartitionedSeriesKey[K],V), ValueBoundedPastAndFutureWindow[K, V, (K,V)]] = {
+  def fromPartitionAsProcess1[K : Ordering : Numeric : ClassTag, V : ClassTag](w : ValueBoundedPastAndFutureWindow[K,V,(K,V)], pastFull : Boolean = false):
+    Process1[(PartitionedSeriesKey[K],V), ValueBoundedPastAndFutureWindow[K, V, (K,V)]] = {
+
     type PI = (PartitionedSeriesKey[K],V)
     type P = (K,V)
-    type STATE = (Option[K],Option[K],ValueBoundedPastAndFutureWindow[K,V,P])
+    type WR = ValueBoundedPastAndFutureWindow[K,V,P]
+    type SE_STATE = (Option[K],Option[K])
+    type STATE = (SE_STATE,WR)
 
-    val zero : STATE = (None,None,w)
+    val zero : STATE = (trackStartEndZero[K],w)
 
-    def op(s : STATE, r : PI) = {
-      //k s.t. first time seen Current
-      val start = if (s._1.isEmpty && r._1.location == PartitionLocation.Current) Some(r._1.key) else s._1
-      //k s.t. first time seen Future
-      val end = if (s._2.isEmpty && r._1.location == PartitionLocation.Future) Some(r._1.key) else s._2
-      (start,end,s._3.updated((r._1.key,r._2)))
-    }
+    def op(s : STATE, r : PI) : STATE =
+      (trackStartEndOp(s._1,r), s._2.updated((r._1.key,r._2)))
 
     def extract(s : STATE) : (STATE,Option[STATE]) = {
-      val nw = s._3.moved()
-      val ns = (s._1,s._2,nw.getOrElse(s._3))
+      val nw = s._2.moved()
+      val ns = (s._1,nw.getOrElse(s._2))
       (ns,nw.map(_ => ns))
     }
 
-    val num = implicitly[Numeric[K]]
-
-    val p: Process1[(PartitionedSeriesKey[K], V), (Option[K], Option[K], ValueBoundedPastAndFutureWindow[K, V, (K, V)])] =
+    val p: Process1[PI, STATE] =
       accumulateAndExtractAll1(op,zero,extract)
 
     // Filter s.t. now() is in [start,end) interval, and strip start,end.
-    p.filter{ case (start,end,w) =>
-      w.now().map { case (k,_) =>
-        start.map(num.gteq(k,_)).getOrElse(false) &&
-          end.map(num.lt(k,_)).getOrElse(true)
-      }.getOrElse(false)
-    }.map( _._3).filter(_.pastFull || !pastFull)
+    p.filter { case (se, w) =>
+      trackStartEndFilter(se, w.now().map(_._1))
+    }.map( _._2).filter(pastFullFilter(pastFull) _)
   }
 
 
@@ -362,7 +384,8 @@ object ValueBoundedPastAndFutureWindowProcessors extends UsefulProcessors with U
    * Note that if the maps don't always have the same keys (i.e. gaps in some of the I streams) then there will necessarily be gaps
    * in their resulting window.
    */
-  def asProcess1Grouped[I,K : Ordering : Numeric : ClassTag, V : ClassTag](prototype : ValueBoundedPastAndFutureWindow[K,V,(K,V)]): Process1[(K,Map[I,V]), (K,Map[I,ValueBoundedPastAndFutureWindow[K,V,(K,V)]])] = {
+  def asProcess1Grouped[I,K : Ordering : Numeric : ClassTag, V : ClassTag](prototype : ValueBoundedPastAndFutureWindow[K,V,(K,V)]):
+     Process1[(K,Map[I,V]), (K,Map[I,ValueBoundedPastAndFutureWindow[K,V,(K,V)]])] = {
 
     //type WR = ValueBoundedPastAndFutureWindow[K,V,P] //windowed record
     type WR1 = ValueBoundedPastAndFutureWindow[K,V,(K,V)]
@@ -376,7 +399,8 @@ object ValueBoundedPastAndFutureWindowProcessors extends UsefulProcessors with U
 
     val zero : STATE =
       (ValueBoundedPastAndFutureWindow(prototype.minPastWidth,prototype.minFutureWidth),
-        (numeric.negate(numeric.one),Map.empty[I,WR1]))
+        //(numeric.negate(numeric.one),Map.empty[I,WR1]))
+        (numeric.zero,Map.empty[I,WR1]))
 
     def op(state : STATE, r : TGR) : STATE  = {
 
