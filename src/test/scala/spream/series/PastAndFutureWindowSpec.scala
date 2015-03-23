@@ -250,7 +250,7 @@ class PastAndFutureWindowProcessSpec extends Specification {def is = s2"""
     type R = String
 
     val p: Process1[(Long, Map[String, R]), (Long, Map[String, ValueBoundedPastAndFutureWindow[Long, R, (Long, R)]])] =
-      ValueBoundedPastAndFutureWindowProcessors.asProcess1Grouped[String,Long,R](ValueBoundedPastAndFutureWindow[Long,R,(Long,R)](30,20))
+      ValueBoundedPastAndFutureWindowProcessors.asProcess1Grouped[String,Long,R,(Long,R)](ValueBoundedPastAndFutureWindow[Long,R,(Long,R)](30,20), Tuple2.apply _)
 
     val data = Range(1,12).map{ case i =>
       val m = Map("A"-> ("A"+i), "B" -> ("B"+i)) ++
@@ -360,7 +360,7 @@ class PastAndFutureWindowPartitionedProcessSpec extends Specification {
     """
   def ppw1 = {
 
-    val p = ValueBoundedPastAndFutureWindowProcessors.fromPartitionAsProcess1(ValueBoundedPastAndFutureWindow[Int,String,(Int,String)](30,20))
+    val p = ValueBoundedPastAndFutureWindowProcessors.fromPartitionAsProcess1(ValueBoundedPastAndFutureWindow[Int,String,(Int,String)](30,20), Tuple2.apply[Int,String] _)
 
     val data = Range(1,14).map{ case i =>
       val (k,v) = ((i*10 + i%3),"V"+i)
