@@ -29,7 +29,7 @@ import scala.collection.SeqView
  * but it then also allows an RDD of windows to be serialized - which we don't need to do (and indicates inefficient usage - like RDD.map
  * rather than process1.map).
  */
-abstract class BoundedPastAndFutureWindow[K : Ordering : Numeric : ClassTag, V : ClassTag, P <: Product2[K,V] : ClassTag](
+abstract class BoundedPastAndFutureWindow[K : Numeric, V, P <: Product2[K,V]](
           nowIndex : Option[Int] = None, window : Vector[P] = Vector.empty) extends Serializable
 {
 
@@ -129,7 +129,7 @@ abstract class BoundedPastAndFutureWindow[K : Ordering : Numeric : ClassTag, V :
 
 object BoundedPastAndFutureWindow {
 
-  def now[K : Ordering : Numeric : ClassTag, V : ClassTag, P <: Product2[K,V] : ClassTag](nowIndex : Option[Int], window : Vector[P]) =
+  def now[K, V, P <: Product2[K,V]](nowIndex : Option[Int], window : Vector[P]) =
     nowIndex.map(window(_))
 
   /**
@@ -137,7 +137,7 @@ object BoundedPastAndFutureWindow {
    * this signals there is no valid next index.
    * @return the next index, if there is one.
    */
-  def nextIndex[K : Ordering : Numeric : ClassTag, V : ClassTag, P <: Product2[K,V] : ClassTag](nowIndex : Option[Int], window : Vector[P]) =
+  def nextIndex[K, V, P <: Product2[K,V]](nowIndex : Option[Int], window : Vector[P]) =
     nowIndex match {
       case None if window.size > 0 => Some(0)
       case Some(n) if (n+1 < window.length) => Some(n+1)
@@ -167,7 +167,7 @@ object BoundedPastAndFutureWindow {
  * @tparam V
  * @tparam P
  */
-case class ValueBoundedPastAndFutureWindow[K : Ordering : Numeric : ClassTag, V : ClassTag, P <: Product2[K,V] : ClassTag](
+case class ValueBoundedPastAndFutureWindow[K : Numeric, V, P <: Product2[K,V]](
        minPastWidth : K, minFutureWidth : K, nowIndex : Option[Int] = None, window : Vector[P] = Vector.empty, pastFull : Boolean = false)
   extends BoundedPastAndFutureWindow[K,V,P](nowIndex,window)
 {
@@ -204,7 +204,7 @@ object ValueBoundedPastAndFutureWindow {
    * Moves now ahead one, if possible.
    * Note this may be called multiple times.
    */
-  def moved[K : Ordering : Numeric : ClassTag, V : ClassTag, P <: Product2[K,V] : ClassTag]( minPastWidth : K, minFutureWidth : K)(nowIndex : Option[Int], window : Vector[P], pastFull : Boolean): Option[(Some[Int], Vector[P], Boolean)] = {
+  def moved[K : Numeric, V, P <: Product2[K,V]]( minPastWidth : K, minFutureWidth : K)(nowIndex : Option[Int], window : Vector[P], pastFull : Boolean): Option[(Some[Int], Vector[P], Boolean)] = {
 
     val numeric = implicitly[Numeric[K]]
 
@@ -270,7 +270,7 @@ object ValueBoundedPastAndFutureWindow {
    * TODO improve this
    * TODO there is a more efficient way to do this... jump straight to the time then chop off the past accordingly.
    */
-  def moveUntil[K: Ordering : Numeric : ClassTag, V: ClassTag, P <: Product2[K, V] : ClassTag](target: K, nowIndex: Option[Int], window: Vector[P], pastFull : Boolean,
+  def moveUntil[K : Numeric, V, P <: Product2[K, V]](target: K, nowIndex: Option[Int], window: Vector[P], pastFull : Boolean,
                                                                                                        moved: (Option[Int], Vector[P], Boolean) => Option[(Option[Int], Vector[P], Boolean)]) = {
 
     val numeric = implicitly[Numeric[K]]
@@ -311,7 +311,7 @@ object ValueBoundedPastAndFutureWindowProcessors extends UsefulProcessors with U
    * @param w prototype
    * @param pastFull whether to filter out windows where past() is not "full"
    */
-  def asProcess1[K : Ordering : Numeric : ClassTag, V : ClassTag, P <: Product2[K,V] : ClassTag](w : PFW[K,V,P], pastFull : Boolean = false): Process1[P, PFW[K, V, P]] = {
+  def asProcess1[K : Numeric : ClassTag, V, P <: Product2[K,V]](w : PFW[K,V,P], pastFull : Boolean = false): Process1[P, PFW[K, V, P]] = {
 
     val zero = w
     def op(w : ValueBoundedPastAndFutureWindow[K,V,P], r : P) = w.updated(r)
@@ -340,7 +340,7 @@ object ValueBoundedPastAndFutureWindowProcessors extends UsefulProcessors with U
   }
 
   // Filter s.t. now is in [start,end) interval
-  private def trackStartEndFilter[K : Ordering : Numeric](state : SE_STATE[K], now : Option[K]) : Boolean = {
+  private def trackStartEndFilter[K : Numeric](state : SE_STATE[K], now : Option[K]) : Boolean = {
     val num = implicitly[Numeric[K]]
     val (start,end) = state
     now.map { case k =>
@@ -357,7 +357,7 @@ object ValueBoundedPastAndFutureWindowProcessors extends UsefulProcessors with U
    * @param w prototype
    * @param pastFull whether to filter out windows where past() is not "full"
    */
-  def fromPartitionAsProcess1[K : Ordering : Numeric : ClassTag, V : ClassTag, P <: Product2[K,V]](w : PFW[K,V,P], c: (K,V) => P, pastFull : Boolean = false):
+  def fromPartitionAsProcess1[K : Numeric, V, P <: Product2[K,V]](w : PFW[K,V,P], c: (K,V) => P, pastFull : Boolean = false):
     Process1[Product2[PartitionedSeriesKey[K],V], PFW[K,V,P]] = {
 
     type PI = Product2[PartitionedSeriesKey[K],V]
@@ -391,7 +391,7 @@ object ValueBoundedPastAndFutureWindowProcessors extends UsefulProcessors with U
 
   type GROUPED_STATE[I,K,V,P <: Product2[K,V]] = (GROUPED_MASTER[K],(K,Map[I,PFW[K,V,P]]))
 
-  private def groupedZero[I, K : Numeric : ClassTag, V,P <: Product2[K,V]](prototype : PFW[K,V,P]): GROUPED_STATE[I,K,V,P] = {
+  private def groupedZero[I, K : Numeric, V,P <: Product2[K,V]](prototype : PFW[K,V,P]): GROUPED_STATE[I,K,V,P] = {
     val numeric = implicitly[Numeric[K]]
     (ValueBoundedPastAndFutureWindow[K,Unit,(K,Unit)](prototype.minPastWidth, prototype.minFutureWidth),
       (numeric.zero, Map.empty[I, PFW[K,V,P]]))
@@ -406,7 +406,7 @@ object ValueBoundedPastAndFutureWindowProcessors extends UsefulProcessors with U
     val ts = r._1
 
     val wr: Map[I, PFW[K,V,P]] = outerJoinAndAggregate2[I,PFW[K,V,P],V](ws._2, r._2, {
-      case (v1: Option[PFW[K,V,P]], v2: V) => v1.getOrElse(prototype).updated(c(ts,v2))
+      case (v1: Option[PFW[K,V,P]], v2) => v1.getOrElse(prototype).updated(c(ts,v2))
     })
 
     //This avoids allowing duplicated keys in master's window
@@ -479,7 +479,9 @@ object ValueBoundedPastAndFutureWindowProcessors extends UsefulProcessors with U
    * in their resulting window.
    * @param prototype prototype
    */
-  def asProcess1Grouped[I,K : Ordering : Numeric : ClassTag, V : ClassTag, P <: Product2[K,V]](prototype : PFW[K,V,P], c : (K,V) => P, pastFull : Boolean = false):
+  def asProcess1Grouped[I,K : Numeric, V, P <: Product2[K,V]](prototype : PFW[K,V,P],
+                                                                                               c : (K,V) => P,
+                                                                                               pastFull : Boolean = false):
      Process1[Product2[K,Map[I,V]], (K,Map[I,PFW[K,V,P]])] = {
 
     type TGR = Product2[K,Map[I,V]]    //'timestamped' grouped record
@@ -507,7 +509,7 @@ object ValueBoundedPastAndFutureWindowProcessors extends UsefulProcessors with U
   /**
    * asProcess1Grouped functionality from a partition.
    */
-  def fromPartitionedAsProcess1Grouped[I,K : Ordering : Numeric : ClassTag, V : ClassTag, P <: Product2[K,V]](prototype : PFW[K,V,P], c : (K,V) => P, pastFull : Boolean = false):
+  def fromPartitionedAsProcess1Grouped[I,K : Numeric, V, P <: Product2[K,V]](prototype : PFW[K,V,P], c : (K,V) => P, pastFull : Boolean = false):
   Process1[Product2[PartitionedSeriesKey[K],Map[I,V]], (K,Map[I,PFW[K,V,P]])] = {
 
     type TGR = Product2[PartitionedSeriesKey[K],Map[I,V]] //'timestamped' grouped record
