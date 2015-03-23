@@ -229,7 +229,7 @@ class IntegrationSuite extends FunSuite with SharedSparkContext {
       val initialState : WO = ValueBoundedPastAndFutureWindow[IK,V,(IK,V)](pastWindow,futureWindow)
 
       val wpd: Process1[(K, M), O] =
-        ValueBoundedPastAndFutureWindowProcessors.fromPartitionedAsProcess1Grouped[I,IK,V,(IK,V)](initialState,Tuple2.apply _, pastFull)
+        ValueBoundedPastAndFutureWindowProcessors.fromPartitionedAsProcess1Grouped[I,IK,V,(IK,V),O](initialState, pastFull = pastFull)
 
       val pd: Process1[(K, M), R] = wpd.map(Function.tupled(comp))
 
@@ -247,7 +247,7 @@ class IntegrationSuite extends FunSuite with SharedSparkContext {
     val initialState : WO = ValueBoundedPastAndFutureWindow[IK,V,(IK,V)](pastWindow,futureWindow)
 
     val wps: Process1[(IK, M), O] =
-      ValueBoundedPastAndFutureWindowProcessors.asProcess1Grouped[I,IK,V,(IK,V)](initialState, Tuple2.apply _)
+      ValueBoundedPastAndFutureWindowProcessors.asProcess1Grouped[I,IK,V,(IK,V),O](initialState)
 
     val ps: Process1[(IK, M), R] = wps.map(Function.tupled(comp))
 

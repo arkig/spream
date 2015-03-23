@@ -248,9 +248,10 @@ class PastAndFutureWindowProcessSpec extends Specification {def is = s2"""
   def pgw1 = {
 
     type R = String
+    type O = (Long, Map[String, ValueBoundedPastAndFutureWindow[Long, R, (Long, R)]])
 
-    val p: Process1[(Long, Map[String, R]), (Long, Map[String, ValueBoundedPastAndFutureWindow[Long, R, (Long, R)]])] =
-      ValueBoundedPastAndFutureWindowProcessors.asProcess1Grouped[String,Long,R,(Long,R)](ValueBoundedPastAndFutureWindow[Long,R,(Long,R)](30,20), Tuple2.apply _)
+    val p: Process1[(Long, Map[String, R]), O] =
+      ValueBoundedPastAndFutureWindowProcessors.asProcess1Grouped[String,Long,R,(Long,R),O](ValueBoundedPastAndFutureWindow[Long,R,(Long,R)](30,20), Tuple2.apply _)
 
     val data = Range(1,12).map{ case i =>
       val m = Map("A"-> ("A"+i), "B" -> ("B"+i)) ++

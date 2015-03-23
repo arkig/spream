@@ -323,7 +323,7 @@ object ValueBoundedPastAndFutureWindowProcessors extends UsefulProcessors with U
     accumulateAndExtractAll1(op,zero,extract).filter(pastFullFilter(pastFull) _)
   }
 
-  type SE_STATE[K] = (Option[K],Option[K])
+  private type SE_STATE[K] = (Option[K],Option[K])
 
   private def trackStartEndZero[K] : SE_STATE[K] = (None,None)
 
@@ -387,9 +387,9 @@ object ValueBoundedPastAndFutureWindowProcessors extends UsefulProcessors with U
   }
 
   //master (for reference) -- contains all updates
-  type GROUPED_MASTER[K] = PFW[K,Unit,(K,Unit)]
+  private type GROUPED_MASTER[K] = PFW[K,Unit,(K,Unit)]
 
-  type GROUPED_STATE[I,K,V,P <: Product2[K,V]] = (GROUPED_MASTER[K],(K,Map[I,PFW[K,V,P]]))
+  private type GROUPED_STATE[I,K,V,P <: Product2[K,V]] = (GROUPED_MASTER[K],(K,Map[I,PFW[K,V,P]]))
 
   private def groupedZero[I, K : Numeric, V,P <: Product2[K,V]](prototype : PFW[K,V,P]): GROUPED_STATE[I,K,V,P] = {
     val numeric = implicitly[Numeric[K]]
@@ -421,7 +421,9 @@ object ValueBoundedPastAndFutureWindowProcessors extends UsefulProcessors with U
   /**
    *
    */
-  private def groupedExtract[I, K : Numeric, V, P <: Product2[K,V]](state : GROUPED_STATE[I,K,V,P]) : (GROUPED_STATE[I,K,V,P], Option[(K,Map[I,PFW[K,V,P]])]) = {
+  private def groupedExtract[I, K : Numeric, V, P <: Product2[K,V], TGWR <: Product2[K,Map[I,PFW[K,V,P]]]](state : GROUPED_STATE[I,K,V,P],
+                                                                                                           c2 : (K,Map[I,PFW[K,V,P]]) => TGWR) :
+  (GROUPED_STATE[I,K,V,P], Option[TGWR]) = {
 
     val (master, ws) = state
 
@@ -459,7 +461,7 @@ object ValueBoundedPastAndFutureWindowProcessors extends UsefulProcessors with U
           assert(ok, tss)
           */
 
-          Some((masterTimestamp,output))
+          Some(c2(masterTimestamp,output))
         }
 
         //NOTE: this is the timestamp of the last record added to the window, not the time of window.now()
@@ -478,14 +480,24 @@ object ValueBoundedPastAndFutureWindowProcessors extends UsefulProcessors with U
    * Note that if the maps don't always have the same keys (i.e. gaps in some of the I streams) then there will necessarily be gaps
    * in their resulting window.
    * @param prototype prototype
+   * @param c constructor for use within the window
+   * @param c2 constructor
+   * @param pastFull
+   * @tparam I grouping type
+   * @tparam K key (e.g timestamp)
+   * @tparam V value
+   * @tparam P "timestamped" value
+   * @tparam TGWR "timestamped" grouped window record
+   * @return
    */
-  def asProcess1Grouped[I,K : Numeric, V, P <: Product2[K,V]](prototype : PFW[K,V,P],
-                                                                                               c : (K,V) => P,
-                                                                                               pastFull : Boolean = false):
-     Process1[Product2[K,Map[I,V]], (K,Map[I,PFW[K,V,P]])] = {
+  def asProcess1Grouped[I,K : Numeric, V, P <: Product2[K,V], TGWR <: Product2[K,Map[I,PFW[K,V,P]]]](prototype : PFW[K,V,P],
+                                                                                                   c : (K,V) => P = Tuple2.apply[K,V] _,
+                                                                                                   c2 : (K,Map[I,PFW[K,V,P]]) => TGWR = Tuple2.apply[K,Map[I,PFW[K,V,P]]] _,
+                                                                                                   pastFull : Boolean = false):
+  Process1[Product2[K,Map[I,V]], TGWR] = {
 
-    type TGR = Product2[K,Map[I,V]]    //'timestamped' grouped record
-    type TGWR = (K,Map[I,PFW[K,V,P]])  //'timestamped' grouped windowed record
+    type INTERNAL_TGWR = (K,Map[I,PFW[K,V,P]])
+    type TGR = Product2[K,Map[I,V]]
     type STATE = GROUPED_STATE[I,K,V,P]
 
     val zero : STATE = groupedZero[I,K,V,P](prototype)
@@ -493,7 +505,7 @@ object ValueBoundedPastAndFutureWindowProcessors extends UsefulProcessors with U
     def op(state : STATE, r : TGR) : STATE = groupedOp(prototype,c)(state,r)
 
     def extract(state : STATE) : (STATE,Option[(STATE,TGWR)]) = {
-      val (newGroupedState,out) : ((GROUPED_MASTER[K], TGWR), Option[TGWR]) = groupedExtract(state)
+      val (newGroupedState,out) : ((GROUPED_MASTER[K], INTERNAL_TGWR), Option[TGWR]) = groupedExtract(state,c2)
       (newGroupedState,out.map(tgwr => (newGroupedState,tgwr)))
     }
 
@@ -509,25 +521,29 @@ object ValueBoundedPastAndFutureWindowProcessors extends UsefulProcessors with U
   /**
    * asProcess1Grouped functionality from a partition.
    */
-  def fromPartitionedAsProcess1Grouped[I,K : Numeric, V, P <: Product2[K,V]](prototype : PFW[K,V,P], c : (K,V) => P, pastFull : Boolean = false):
-  Process1[Product2[PartitionedSeriesKey[K],Map[I,V]], (K,Map[I,PFW[K,V,P]])] = {
+  def fromPartitionedAsProcess1Grouped[I,K : Numeric, V, P <: Product2[K,V], TGWR <: Product2[K,Map[I,PFW[K,V,P]]]](
+                                                                             prototype : PFW[K,V,P],
+                                                                             c : (K,V) => P = Tuple2.apply[K,V] _,
+                                                                             c2 : (K,Map[I,PFW[K,V,P]]) => TGWR = Tuple2.apply[K,Map[I,PFW[K,V,P]]] _,
+                                                                             pastFull : Boolean = false):
+  Process1[Product2[PartitionedSeriesKey[K],Map[I,V]], TGWR] = {
 
+    type INTERNAL_TGWR = (K,Map[I,PFW[K,V,P]])
     type TGR = Product2[PartitionedSeriesKey[K],Map[I,V]] //'timestamped' grouped record
-    type TGWR = (K,Map[I,PFW[K,V,P]])                     //'timestamped' grouped windowed record
     type STATE = (SE_STATE[K],GROUPED_STATE[I,K,V,P])
 
     val zero : STATE = (trackStartEndZero[K], groupedZero[I,K,V,P](prototype))
 
     def op(state : STATE, r : TGR) : STATE = {
       val (ses,gws) = state
-      val gwsu: (GROUPED_MASTER[K], TGWR) = groupedOp(prototype,c)(gws,(r._1.key,r._2))
+      val gwsu: (GROUPED_MASTER[K], INTERNAL_TGWR) = groupedOp(prototype,c)(gws,(r._1.key,r._2))
       val sesu = trackStartEndOp(ses,r)
       (sesu,gwsu)
     }
 
     def extract(state : STATE) : (STATE,Option[(STATE,TGWR)]) = {
       val (ses,gws) = state
-      val (newGroupedState,out) : ((GROUPED_MASTER[K], TGWR), Option[TGWR]) = groupedExtract(gws)
+      val (newGroupedState,out) : ((GROUPED_MASTER[K], INTERNAL_TGWR), Option[TGWR]) = groupedExtract(gws,c2)
       val newState = (ses,newGroupedState)
       (newState,out.map(tgwr => (newState,tgwr)))
     }
@@ -535,16 +551,13 @@ object ValueBoundedPastAndFutureWindowProcessors extends UsefulProcessors with U
     val p: Process1[TGR, (STATE, TGWR)] = accumulateAndExtractAll1(op,zero,extract)
 
     // Filter s.t. now() is in [start,end) interval, and strip start,end.
-    // Do this based on master (since everything is in step with it)
+    // Do this based on master (since all windows are in step with it)
     p.filter { case ((ses,(master,_)), out) =>
       trackStartEndFilter(ses, master.now().map(_._1)) &&
       pastFullFilter(pastFull)(master)
     }.map(_._2)
 
   }
-
-
-
 }
 
 
