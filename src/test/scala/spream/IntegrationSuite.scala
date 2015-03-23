@@ -29,11 +29,16 @@ object CompContainer {
   def getNowKey[K,V](w : ValueBoundedPastAndFutureWindow[K,V,(K,V)]) =
     w.now().get._1
 
+  def meanPastSum[I,K : Numeric,V](t : K, m : Map[I,ValueBoundedPastAndFutureWindow[K,V,(K,V)]]) = {
+    val num = implicitly[Numeric[K]]
+    num.toDouble(m.mapValues(pastSum[K, V] _).values.flatten.sum)/m.size
+  }
+
 }
 
 class IntegrationSuite extends FunSuite with SharedSparkContext {
 
-  def genLinearRdd(n : Int, m : Int) =
+  def genLinearRdd(n : Int, m : Int): RDD[(Int, Unit)] =
     sc.makeRDD(0 until n, n).flatMap { i =>
       // Lets stream into the RDD directly via a Process...
       val p = Process.range(0,m)
@@ -89,7 +94,8 @@ class IntegrationSuite extends FunSuite with SharedSparkContext {
    * Note that ValueBoundedPastAndFutureWindow spans a greater width than the windows in the partitioning, so buffer
    * is necessary for computations where entire past() or future() is used (rather than the part that is within the window).
    */
-  def pastFutureMovingWindowTest[IK : Numeric : ClassTag, R : ClassTag](rdd1 : RDD[(IK,Unit)], pastWindow : IK, futureWindow : IK, pastFull : Boolean, buffer : IK, n : Int, comp : ValueBoundedPastAndFutureWindow[IK,Unit,(IK,Unit)] => R) {
+  def pastFutureMovingWindowTest[IK : Numeric : ClassTag, R : ClassTag]
+  (rdd1 : RDD[(IK,Unit)], pastWindow : IK, futureWindow : IK, pastFull : Boolean, buffer : IK, n : Int, comp : ValueBoundedPastAndFutureWindow[IK,Unit,(IK,Unit)] => R) {
 
     val num = implicitly[Numeric[IK]]
     val approach = "map"
@@ -188,6 +194,86 @@ class IntegrationSuite extends FunSuite with SharedSparkContext {
     val rdd1 = genLinearRdd(n,m).map(x => (Math.pow(x._1,1.2),x._2)) //no longer evenly distributed
 
     pastFutureMovingWindowTest[Double,Double](rdd1,pw,fw,false,b,n,CompContainer.pastFutureSum[Double,Unit] _)
+
+  }
+
+
+  /**
+   * Compares a distributed streaming result to a local streaming result, where grouped ValueBoundedPastAndFutureWindows are
+   * required for the streaming computation.
+   */
+  def groupedPastFutureMovingWindowTest[IK : Numeric : ClassTag, I : ClassTag, V : ClassTag, R : ClassTag]
+    (rdd1 : RDD[(IK,Map[I,V])],pastWindow : IK, futureWindow : IK, pastFull : Boolean, buffer : IK, n : Int,
+     comp : (IK,Map[I,ValueBoundedPastAndFutureWindow[IK,V,(IK,V)]]) => R) {
+
+    val num = implicitly[Numeric[IK]]
+    type M = Map[I,V]
+    type W = ValueBoundedPastAndFutureWindow[IK,M, (IK, M)]
+    type WO = ValueBoundedPastAndFutureWindow[IK,V, (IK, V)]
+    type O = (IK,Map[I,WO])
+
+    // Distributed version
+    // -------------------
+
+    type K = PartitionedSeriesKey[IK]
+
+    // Note: buffer is used because past() in a window will also return the last value just prior to the boundary, whereas
+    // the partitioning doesn't (can't) do that. So it's a work around required for certain types of window operations.
+    val rdd2: RDD[(K, M)] =
+      MovingWindowPartitioning.movingWindowPartitioned[IK,M,(IK,M)](rdd1,num.plus(pastWindow,buffer),num.plus(futureWindow,buffer),n)
+
+    val rdd3 = rdd2.mapPartitions({
+
+      //NOTE: this stuff gets serialized (which works, but I don't think it's necessary for Spark to implement mapPartitions that way)
+
+      val initialState : WO = ValueBoundedPastAndFutureWindow[IK,V,(IK,V)](pastWindow,futureWindow)
+
+      val wpd: Process1[(K, M), O] =
+        ValueBoundedPastAndFutureWindowProcessors.fromPartitionedAsProcess1Grouped[I,IK,V](initialState,pastFull)
+
+      val pd: Process1[(K, M), R] = wpd.map(Function.tupled(comp))
+
+      IteratorConversions.process1ToIterators(pd) _
+
+    },true)
+
+    val res = rdd3.collect().toList
+
+    // Streaming version
+    // -----------------
+
+    val data = rdd1.collect()
+
+    val initialState : WO = ValueBoundedPastAndFutureWindow[IK,V,(IK,V)](pastWindow,futureWindow)
+
+    val wps: Process1[(IK, M), O] =
+      ValueBoundedPastAndFutureWindowProcessors.asProcess1Grouped[I,IK,V](initialState)
+
+    val ps: Process1[(IK, M), R] = wps.map(Function.tupled(comp))
+
+    val s: Process[Nothing, R] = IteratorConversions.iteratorToProcess0(data.iterator) |> ps
+
+    val res2 = s.toList
+
+    println("\n\nInput:\n"+data.toList)
+    println("\n\nDisrtibuted Result:\n"+res)
+    println("\n\nResult:\n"+res2)
+
+
+    assert(res == res2)
+  }
+
+
+  test("Distributed past-future grouped moving window - meanPastSum") {
+
+    val (n,m,pw,fw,b) = (20,12,13.0,10.0,5.0)
+    val rdd1 = genLinearRdd(n,m).map{ case (x,_) =>
+      val nx = Math.pow(x,1.2)
+      val m = Map('A' -> 1.0*x, 'B' -> 2.0*x, 'C' -> 3.0*x)
+      (nx,m)
+    } //no longer evenly distributed
+
+    groupedPastFutureMovingWindowTest[Double,Char,Double,Double](rdd1,pw,fw,false,b,n,CompContainer.meanPastSum[Char,Double,Double] _)
 
   }
 
