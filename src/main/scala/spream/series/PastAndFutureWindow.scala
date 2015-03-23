@@ -295,7 +295,9 @@ object ValueBoundedPastAndFutureWindow {
 
 }
 
-
+/**
+ * Useful scalaz.stream Process1 machines.
+ */
 object ValueBoundedPastAndFutureWindowProcessors extends UsefulProcessors with Util with Serializable
 {
 
@@ -319,10 +321,12 @@ object ValueBoundedPastAndFutureWindowProcessors extends UsefulProcessors with U
     accumulateAndExtractAll1(op,zero,extract).filter(pastFullFilter(pastFull) _)
   }
 
-  private def trackStartEndZero[K] : (Option[K],Option[K]) = (None,None)
+  type SE_STATE[K] = (Option[K],Option[K])
+
+  private def trackStartEndZero[K] : SE_STATE[K] = (None,None)
 
   // Maintain current [start,end) interval state
-  private def trackStartEndOp[K,V](state : (Option[K],Option[K]), r : (PartitionedSeriesKey[K],V)) : (Option[K],Option[K]) = {
+  private def trackStartEndOp[K,V](state : SE_STATE[K], r : (PartitionedSeriesKey[K],V)) : SE_STATE[K] = {
 
     //k s.t. first time seen Current
     val start = if (state._1.isEmpty && r._1.location == PartitionLocation.Current) Some(r._1.key) else state._1
@@ -334,7 +338,7 @@ object ValueBoundedPastAndFutureWindowProcessors extends UsefulProcessors with U
   }
 
   // Filter s.t. now is in [start,end) interval
-  private def trackStartEndFilter[K : Ordering : Numeric](state : (Option[K],Option[K]), now : Option[K]) : Boolean = {
+  private def trackStartEndFilter[K : Ordering : Numeric](state : SE_STATE[K], now : Option[K]) : Boolean = {
     val num = implicitly[Numeric[K]]
     val (start,end) = state
     now.map { case k =>
@@ -343,29 +347,35 @@ object ValueBoundedPastAndFutureWindowProcessors extends UsefulProcessors with U
     }.getOrElse(false)
   }
 
+  type PFW[K,V] = ValueBoundedPastAndFutureWindow[K,V,(K,V)]
+
   /**
-   * Turns a stream of values within a partition into a stream of windows.
+   * Turns a stream of values within a partition into a stream of windows, in such a way that
+   * calling now() on each window in the output stream would traverse all values in the Current part of the
+   * partition (provided the partition was created with enough Past and Future).
+   * Note: This allows distributed computation of asProcess1.
    * @param w prototype
    * @param pastFull whether to filter out windows where past() is not "full"
    */
-  def fromPartitionAsProcess1[K : Ordering : Numeric : ClassTag, V : ClassTag](w : ValueBoundedPastAndFutureWindow[K,V,(K,V)], pastFull : Boolean = false):
-    Process1[(PartitionedSeriesKey[K],V), ValueBoundedPastAndFutureWindow[K, V, (K,V)]] = {
+  def fromPartitionAsProcess1[K : Ordering : Numeric : ClassTag, V : ClassTag](w : PFW[K,V], pastFull : Boolean = false):
+    Process1[(PartitionedSeriesKey[K],V), PFW[K,V]] = {
 
     type PI = (PartitionedSeriesKey[K],V)
     type P = (K,V)
-    type WR = ValueBoundedPastAndFutureWindow[K,V,P]
-    type SE_STATE = (Option[K],Option[K])
-    type STATE = (SE_STATE,WR)
+    type STATE = (SE_STATE[K],PFW[K,V])
 
     val zero : STATE = (trackStartEndZero[K],w)
 
-    def op(s : STATE, r : PI) : STATE =
-      (trackStartEndOp(s._1,r), s._2.updated((r._1.key,r._2)))
+    def op(s : STATE, r : PI) : STATE = {
+      val(ses,ws) = s
+      (trackStartEndOp(ses, r), ws.updated((r._1.key, r._2)))
+    }
 
     def extract(s : STATE) : (STATE,Option[STATE]) = {
-      val nw = s._2.moved()
-      val ns = (s._1,nw.getOrElse(s._2))
-      (ns,nw.map(_ => ns))
+      val (ses,ps) = s
+      val psu = ps.moved()
+      val ns = (ses,psu.getOrElse(ps))
+      (ns,psu.map(_ => ns))
     }
 
     val p: Process1[PI, STATE] =
@@ -377,105 +387,161 @@ object ValueBoundedPastAndFutureWindowProcessors extends UsefulProcessors with U
     }.map( _._2).filter(pastFullFilter(pastFull) _)
   }
 
+  //master (for reference) -- contains all updates
+  type GROUPED_MASTER[K] = PFW[K,Unit]
+
+  type GROUPED_STATE[I,K,V] = (GROUPED_MASTER[K],(K,Map[I,PFW[K,V]]))
+
+  private def groupedZero[I, K : Numeric : ClassTag, V](prototype : PFW[K,V]): GROUPED_STATE[I,K,V] = {
+    val numeric = implicitly[Numeric[K]]
+    (ValueBoundedPastAndFutureWindow[K,Unit,(K,Unit)](prototype.minPastWidth, prototype.minFutureWidth),
+      (numeric.zero, Map.empty[I, PFW[K,V]]))
+  }
+
+  private def groupedOp[I, K : Numeric, V](prototype : PFW[K,V])(state : GROUPED_STATE[I,K,V], r : (K,Map[I,V])) = {
+
+    val (master, ws) = state
+
+    //use timestamp of record rather than internal timestamps of R
+    //NOTE: we don't know that R is timestamped, and this enforces that all the R's in the map are in sync. (*)
+    val ts = r._1
+
+    val wr: Map[I, PFW[K,V]] = outerJoinAndAggregate2[I,PFW[K,V],V](ws._2, r._2, {
+      case (v1: Option[PFW[K,V]], v2: V) => v1.getOrElse(prototype).updated((ts,v2))
+    })
+
+    //This avoids allowing duplicated keys in master's window
+    //TODO this still allows duplicated keys before the first move!
+    val updatedMaster = if (master.now().map(_._1 != ts).getOrElse(true))
+      master.updated((ts,()))
+    else master
+
+    (updatedMaster, (ts,wr))
+  }
+
+  /**
+   *
+   */
+  private def groupedExtract[I, K : Numeric, V](state : GROUPED_STATE[I,K,V]) : (GROUPED_STATE[I,K,V], Option[(K,Map[I,PFW[K,V]])]) = {
+
+    val (master, ws) = state
+
+    master.moved() match {
+
+      case Some(movedMaster) =>
+
+        //Master moved. Lets get all series to catch up to it and output if so, or set to state closest to it if can't catch up yet.
+        val masterTimestamp = movedMaster.now().get._1
+
+        val mws: Map[I, (ValueBoundedPastAndFutureWindow[K, V, (K, V)], Option[ValueBoundedPastAndFutureWindow[K, V, (K, V)]])] = ws._2.mapValues{ w =>
+          w.movedUntil(masterTimestamp) match {
+            case (_,Some(found)) => (found,Some(found)) //found
+            case (Some(closest),None) => (closest,None) //didn't find but moved
+            case (None, None) => (w,None) //didn't move
+          }}
+
+        //updated state (some will have moved, others not)
+        val updated: Map[I, PFW[K,V]] = mws.mapValues(_._1)
+
+        //output only those that have moved up to master
+        val output = mws.flatMap{ case (i,(u,o)) => o.map((i,_))}
+
+        val out = if(output.isEmpty)
+          None //master may have moved, but none of the series have been able to keep up
+        else {
+
+          /*
+          //Sanity check
+          //All timestamps of updated windows must be equal to masterTimestamp
+          val tss = output.map(_._2.now().get.timestamp)
+          val ok = tss.foldLeft(true) {
+            case (ok, t) => ok && t == masterTimestamp
+          }
+          assert(ok, tss)
+          */
+
+          Some((masterTimestamp,output))
+        }
+
+        //NOTE: this is the timestamp of the last record added to the window, not the time of window.now()
+        val ts = ws._1
+
+        ((movedMaster,(ts,updated)), out)
+
+      case None => (state,None) //no change
+    }
+  }
+
 
   /**
    * Turns a stream of grouped values (i.e. state of many I's at that SAME K)
    * into a stream of grouped windows of those values, such that now() in each of those windows is at the same K (i.e. they are in sync).
    * Note that if the maps don't always have the same keys (i.e. gaps in some of the I streams) then there will necessarily be gaps
    * in their resulting window.
+   * @param prototype prototype
    */
-  def asProcess1Grouped[I,K : Ordering : Numeric : ClassTag, V : ClassTag](prototype : ValueBoundedPastAndFutureWindow[K,V,(K,V)]):
-     Process1[(K,Map[I,V]), (K,Map[I,ValueBoundedPastAndFutureWindow[K,V,(K,V)]])] = {
+  def asProcess1Grouped[I,K : Ordering : Numeric : ClassTag, V : ClassTag](prototype : PFW[K,V], pastFull : Boolean = false):
+     Process1[(K,Map[I,V]), (K,Map[I,PFW[K,V]])] = {
 
-    //type WR = ValueBoundedPastAndFutureWindow[K,V,P] //windowed record
-    type WR1 = ValueBoundedPastAndFutureWindow[K,V,(K,V)]
-    type TGR = (K,Map[I,V])    //'timestamped' grouped record
-    type GWR = Map[I, WR1]     //grouped windowed record
-    type TGWR = (K,Map[I,WR1]) //'timestamped' grouped windowed record
-    type MASTER = ValueBoundedPastAndFutureWindow[K,Unit,(K,Unit)] //master (for reference) -- contains all updates
-    type STATE = (MASTER,TGWR)
+    type TGR = (K,Map[I,V])         //'timestamped' grouped record
+    type TGWR = (K,Map[I,PFW[K,V]]) //'timestamped' grouped windowed record
+    type STATE = GROUPED_STATE[I,K,V]
 
-    val numeric = implicitly[Numeric[K]]
+    val zero : STATE = groupedZero[I,K,V](prototype)
 
-    val zero : STATE =
-      (ValueBoundedPastAndFutureWindow(prototype.minPastWidth,prototype.minFutureWidth),
-        //(numeric.negate(numeric.one),Map.empty[I,WR1]))
-        (numeric.zero,Map.empty[I,WR1]))
+    def op(state : STATE, r : TGR) : STATE = groupedOp(prototype)(state,r)
 
-    def op(state : STATE, r : TGR) : STATE  = {
-
-      val (master, ws) = state
-
-      //use timestamp of record rather than internal timestamps of R
-      // NOTE: we don't know that R is timestamped, and this enforces that all the R's in the map are in sync. (*)
-      val ts = r._1
-
-      val wr: Map[I, WR1] = outerJoinAndAggregate2[I,WR1,V](ws._2, r._2, {
-        case (v1: Option[WR1], v2: V) => v1.getOrElse(prototype).updated((ts,v2))
-      })
-
-      //This avoids allowing duplicated keys in master's window
-      //TODO this still allows duplicated keys before the first move!
-      val updatedMaster = if (master.now().map(_._1 != ts).getOrElse(true))
-        master.updated((ts,()))
-      else master
-
-      (updatedMaster, (ts,wr))
+    def extract(state : STATE) : (STATE,Option[(STATE,TGWR)]) = {
+      val (newGroupedState,out) : ((GROUPED_MASTER[K], TGWR), Option[TGWR]) = groupedExtract(state)
+      (newGroupedState,out.map(tgwr => (newGroupedState,tgwr)))
     }
 
+    val p = accumulateAndExtractAll1(op,zero,extract)
 
-    def extract(state : STATE) : (STATE,Option[TGWR]) = {
-
-      val (master, ws) = state
-
-      master.moved() match {
-
-        case Some(movedMaster) =>
-
-          //Master moved. Lets get all series to catch up to it and output if so, or set to state closest to it if can't catch up yet.
-          val masterTimestamp = movedMaster.now().get._1
-
-          val mws: Map[I, (ValueBoundedPastAndFutureWindow[K, V, (K, V)], Option[ValueBoundedPastAndFutureWindow[K, V, (K, V)]])] = ws._2.mapValues{ w =>
-            w.movedUntil(masterTimestamp) match {
-              case (_,Some(found)) => (found,Some(found)) //found
-              case (Some(closest),None) => (closest,None) //didn't find but moved
-              case (None, None) => (w,None) //didn't move
-            }}
-
-          //updated state (some will have moved, others not)
-          val updated: Map[I, WR1] = mws.mapValues(_._1)
-
-          //output only those that have moved up to master
-          val output = mws.flatMap{ case (i,(u,o)) => o.map((i,_))}
-
-          val out = if(output.isEmpty)
-            None //master may have moved, but none of the series have been able to keep up
-          else {
-
-            /*
-            //Sanity check
-            //All timestamps of updated windows must be equal to masterTimestamp
-            val tss = output.map(_._2.now().get.timestamp)
-            val ok = tss.foldLeft(true) {
-              case (ok, t) => ok && t == masterTimestamp
-            }
-            assert(ok, tss)
-            */
-
-            Some((masterTimestamp,output))
-          }
-
-          //NOTE: this is the timestamp of the last record added to the window, not the time of window.now()
-          val ts = ws._1
-
-          ((movedMaster,(ts,updated)), out)
-
-        case None => (state,None) //no change
-      }
-    }
-
-    accumulateAndExtractAll1(op,zero,extract)
+    p.filter{ case ((master,_),out) =>
+      pastFullFilter(pastFull)(master)
+    }.map(_._2)
   }
+
+
+
+  /**
+   * asProcess1Grouped functionality from a partition.
+   */
+  def fromPartitionedAsProcess1Grouped[I,K : Ordering : Numeric : ClassTag, V : ClassTag](prototype : PFW[K,V], pastFull : Boolean = false):
+  Process1[(PartitionedSeriesKey[K],Map[I,V]), (K,Map[I,PFW[K,V]])] = {
+
+    type TGR = (PartitionedSeriesKey[K],Map[I,V]) //'timestamped' grouped record
+    type TGWR = (K,Map[I,PFW[K,V]])               //'timestamped' grouped windowed record
+    type STATE = (SE_STATE[K],GROUPED_STATE[I,K,V])
+
+    val zero : STATE = (trackStartEndZero[K], groupedZero[I,K,V](prototype))
+
+    def op(state : STATE, r : TGR) : STATE = {
+      val (ses,gws) = state
+      val gwsu: (GROUPED_MASTER[K], TGWR) = groupedOp(prototype)(gws,(r._1.key,r._2))
+      val sesu = trackStartEndOp(ses,r)
+      (sesu,gwsu)
+    }
+
+    def extract(state : STATE) : (STATE,Option[(STATE,TGWR)]) = {
+      val (ses,gws) = state
+      val (newGroupedState,out) : ((GROUPED_MASTER[K], TGWR), Option[TGWR]) = groupedExtract(gws)
+      val newState = (ses,newGroupedState)
+      (newState,out.map(tgwr => (newState,tgwr)))
+    }
+
+    val p: Process1[TGR, (STATE, TGWR)] = accumulateAndExtractAll1(op,zero,extract)
+
+    // Filter s.t. now() is in [start,end) interval, and strip start,end.
+    // Do this based on master (since everything is in step with it)
+    p.filter { case ((ses,(master,_)), out) =>
+      trackStartEndFilter(ses, master.now().map(_._1)) &&
+      pastFullFilter(pastFull)(master)
+    }.map(_._2)
+
+  }
+
 
 
 }
