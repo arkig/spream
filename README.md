@@ -6,7 +6,7 @@ Stream processing is natural when data is an ordered sequence, such as a timeser
 Stream processing is also a memory efficient approach to handling large datasets (whether it is a sequence of not). 
 But in order to process existing large series datasets quickly, it is necessary to partition them by time and process 
 them in parallel. This is non-trivial when order is important, and when processing depends on past (or future) 
-values - such as moving windows. This library solves these problems using 
+values - such as moving windows. This project solves these problems using 
 [scalaz.stream](https://github.com/scalaz/scalaz-stream)s and [Apache Spark](https://spark.apache.org/).
  
 Key features:
@@ -32,7 +32,7 @@ The [integration tests](src/test/scala/spream/IntegrationSuite.scala) provide so
 
 - Note that `scalaz.stream.Process[Task,O]`s are not serializable and they do not need to be serialized for
 this to work. If you code it correctly they get instantiated on the worker. If you don't, you get an exception.
-- You now have two options to map, flatMap, etc over an RDD - as part of the `Processor` running in the  
+- You now have two options to map, flatMap, etc over an RDD - as part of the `Processor` running in the 
 partitions or on the RDD itself. Prefer the former because it should prevent an additional pass.
 - Try to load data into your RDD so that it is already sorted.  
 
@@ -48,8 +48,8 @@ a similar way to `RangePartitioner`).
 since the LKV can be arbitrarily far in the past (i.e. beyond any window used when partitioning). This case is not 
 covered in this library, because a) it means there is a strong dependency on the data, which would break the mechanism 
 which allows the window partitioning to be implemented efficiently, and b) use cases where a meaningful past window bound 
-cannot be set are rare (and probably bad!). For example, if you need a moving average with decay, it is reasonable to 
-cut off the long tail of your decay function.  
+cannot be set are rare (and probably bad!). For example, if you need a moving average with decay, it's probably 
+reasonable to cut off the long tail of your decay function.  
       
 ## What about Spark Streaming?
       
