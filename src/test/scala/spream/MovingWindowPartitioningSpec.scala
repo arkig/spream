@@ -3,10 +3,10 @@ package spream
 import org.scalatest.FunSuite
 import org.scalatest.PrivateMethodTester
 import org.specs2.Specification
-import spream.PartitionLocation
 import MovingWindowPartitioning.IntervalSets
 import PartitionLocation.EnumVal
 import org.apache.spark.{SparkContext, LocalSparkContext, RangePartitioning, SharedSparkContext}
+import org.apache.spark.rdd.{RDD, RDD2}
 
 // Declare outside test class to avoid serialisation due to closure
 object Container {
@@ -46,6 +46,7 @@ object Container {
 
       (p,(cl,cu))
     }).iterator
+
   }
 
   def checkBetweenPartitions[K : Numeric](currentBounds : Array[(Int, (K, K))]) = {
@@ -60,6 +61,11 @@ object Container {
         Some(u)
     }
 
+  }
+
+  def projectCurrent[K,V](x : (PartitionedSeriesKey[K],V)) = x match {
+    case (k, v) if k.location == PartitionLocation.Current => Some((k.key, v))
+    case default => None
   }
 
 }
@@ -82,7 +88,7 @@ class MovingWindowPartitioningSuite extends FunSuite with SharedSparkContext wit
     val rdd1 = MovingWindowPartitioning.duplicateToIntervals[Double,String,(Double,String)](rdd,is)
     //println(rdd1.collect().mkString("\n"))
 
-    val rdd2 = MovingWindowPartitioning.applyPartitioning[Double,String,Product2[PartitionedSeriesKey[Double],String]](rdd1,rb)
+    val rdd2 = MovingWindowPartitioning.applyPartitioning[Double,String,Product2[PartitionedSeriesKey[Double],String]](rdd1,rb,true)
     //println(rdd2.collect().mkString("\n"))
 
     val currentBounds: Array[(Int, (Double, Double))] = rdd2
@@ -93,8 +99,8 @@ class MovingWindowPartitioningSuite extends FunSuite with SharedSparkContext wit
     Container.checkBetweenPartitions(currentBounds)
   }
 
-  def rdd1(partitions : Int) =
-    sc.makeRDD(0 until 20, partitions)
+  def rdd1(partitions : Int, n : Int = 20) =
+    sc.makeRDD(0 until n, partitions)
       .flatMap { i => (i until 2*i+10)}
       .map(i => (i,())).sortBy(_._1).cache()
 
@@ -133,6 +139,25 @@ class MovingWindowPartitioningSuite extends FunSuite with SharedSparkContext wit
       .collect().sortBy(_._1)
     Container.checkBetweenPartitions(currentBounds)
   }
+
+  test("FilterByRange - must work in all combinations") {
+
+    val rdd: RDD[(Int, Unit)] = rdd1(20)
+    val rdd2 = MovingWindowPartitioning.movingWindowPartitioned[Int,Unit,(Int,Unit)](rdd,6,5,9)
+
+    import RDD2._
+
+      // PartitionedSeriesKey[K]
+    val rdda = rdd2.filterByRange2(10,20)
+    val rddaa = rdda.flatMap(Container.projectCurrent[Int,Unit] _)
+
+    // K
+    val rddb: RDD[(Int, Unit)] = rdd2.flatMap(Container.projectCurrent[Int,Unit] _)
+    val rddbb = rddb.filterByRange2(10,20)
+
+    assert(rddaa.collect().toSeq == rddbb.collect().toSeq, "a != b")
+  }
+
 
 }
 

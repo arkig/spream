@@ -7,7 +7,6 @@ import scala.collection.mutable
 import org.apache.spark.rdd._
 import org.apache.spark.{RangePartitioning, Partitioner}
 
-
 object PartitionLocation {
   sealed trait EnumVal
   case object Past extends EnumVal
@@ -125,9 +124,9 @@ object MovingWindowPartitioning {
    * @return
    */
   def applyPartitioning[K : Ordering : Numeric : ClassTag, V : ClassTag, P <: Product2[PartitionedSeriesKey[K],V] : ClassTag](
-             rdd: RDD[P], rangeBounds : Array[K]): RDD[(PartitionedSeriesKey[K], V)] = {
+             rdd: RDD[P], rangeBounds : Array[K], ascending : Boolean): RDD[(PartitionedSeriesKey[K], V)] = {
     val f = new OrderedRDDFunctions[PartitionedSeriesKey[K], V, P](rdd)
-    f.repartitionAndSortWithinPartitions(new PartitionedSeriesPartitioner(rangeBounds))
+    f.repartitionAndSortWithinPartitions(new PartitionedSeriesPartitioner(rangeBounds, ascending))
   }
 
   /**
@@ -147,18 +146,57 @@ object MovingWindowPartitioning {
     val rb = RangePartitioning.rangeBounds[K,V](rdd,partitions)
     val is = intervalSets(rb,pastWidth,futureWidth)
     val d = duplicateToIntervals[K,V,P](rdd,is)
-    applyPartitioning(d,rb)
+    applyPartitioning(d,rb,true)
   }
 
 
 }
 
+//TODO extend sRangPartitioner, and if not PartitionedSeriesKey, delegate to that... should work ??
 
-class PartitionedSeriesPartitioner[K : Ordering : ClassTag](rangeBounds : Array[K]) extends Partitioner { //RangePartitioner[K,Unit](rangeBounds.length+1,null,true) {
+class PartitionedSeriesPartitioner[K : Ordering : ClassTag](rangeBounds : Array[K], ascending : Boolean) extends Partitioner { //RangePartitioner[K,Unit](rangeBounds.length+1,null,true) {
+
+  private var ordering = implicitly[Ordering[K]]
 
   override def numPartitions: Int = rangeBounds.length + 1
 
-  override def getPartition(key: Any): Int = key.asInstanceOf[PartitionedSeriesKey[K]].partition
+  // These are used to filter by range
+  def getPartitionTypesafe(key: K): Int = doGetPartition(key)
+  def getPartitionTypesafe(key: PartitionedSeriesKey[K]): Int = key.partition
+
+  // Used to perform partitioning. No control over the API to improve this...
+  override def getPartition(key: Any): Int =
+    getPartitionTypesafe(key.asInstanceOf[PartitionedSeriesKey[K]])
+
+  private var binarySearch: ((Array[K], K) => Int) =
+    org.apache.spark.util.CollectionsUtils.makeBinarySearch[K]
+
+  // Unfortunately RangePartitioner isn't written in a way where you can inherit from it, so the following
+  // is almost a cut-and-paste of functionality there.
+  private def doGetPartition(k: K): Int = {
+    var partition = 0
+    if (rangeBounds.length <= 128) {
+      // If we have less than 128 partitions naive search
+      while (partition < rangeBounds.length && ordering.gt(k, rangeBounds(partition))) {
+        partition += 1
+      }
+    } else {
+      // Determine which binary search method to use only once.
+      partition = binarySearch(rangeBounds, k)
+      // binarySearch either returns the match location or -[insertion point]-1
+      if (partition < 0) {
+        partition = -partition-1
+      }
+      if (partition > rangeBounds.length) {
+        partition = rangeBounds.length
+      }
+    }
+    if (ascending) {
+      partition
+    } else {
+      rangeBounds.length - partition
+    }
+  }
 
 }
 

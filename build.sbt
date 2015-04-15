@@ -21,7 +21,8 @@ libraryDependencies ++= Seq(
 )
 
 libraryDependencies ++= Seq(
-  "org.apache.spark" %% "spark-core" % "1.2.0" % "provided",
+  //"org.apache.spark" %% "spark-core" % "1.2.0" % "provided",
+  "org.apache.spark" %% "spark-core" % "1.3.0" % "provided",
   "org.apache.hadoop" % "hadoop-client" % "2.4.1" % "provided"
 )
 

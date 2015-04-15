@@ -27,7 +27,7 @@ trait PastAndFutureWindowSpecHelper {
     var res = Seq.empty[(Option[Int],Vector[P])]
     while (!next.isEmpty) {
       val n = next.get
-      res = res :+ (n._1,n._2) //TODO add _3
+      res = res :+ ((n._1,n._2)) //TODO add _3
       next = moved(n._1,n._2,n._3)
     }
     res
