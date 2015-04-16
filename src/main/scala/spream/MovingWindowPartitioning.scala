@@ -154,7 +154,7 @@ object MovingWindowPartitioning {
 
 //TODO extend sRangPartitioner, and if not PartitionedSeriesKey, delegate to that... should work ??
 
-class PartitionedSeriesPartitioner[K : Ordering : ClassTag](rangeBounds : Array[K], ascending : Boolean) extends Partitioner { //RangePartitioner[K,Unit](rangeBounds.length+1,null,true) {
+class PartitionedSeriesPartitioner[K : Ordering : ClassTag](val rangeBounds : Array[K], val ascending : Boolean) extends Partitioner { //RangePartitioner[K,Unit](rangeBounds.length+1,null,true) {
 
   private var ordering = implicitly[Ordering[K]]
 
