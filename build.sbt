@@ -1,6 +1,6 @@
 name := "spream"
 
-version := "0.1-SNAPSHOT"
+version := "0.1.1-SNAPSHOT"
 
 organization := "com.arkig"
 
@@ -20,10 +20,12 @@ libraryDependencies ++= Seq(
   "org.scalatest"          %  "scalatest_2.10" % "2.2.4" % "test"
 )
 
+//"org.apache.spark" %% "spark-core" % "1.2.0" % "provided",
+//"org.apache.hadoop" % "hadoop-client" % "2.4.1" % "provided"
+
 libraryDependencies ++= Seq(
-  //"org.apache.spark" %% "spark-core" % "1.2.0" % "provided",
   "org.apache.spark" %% "spark-core" % "1.3.0" % "provided",
-  "org.apache.hadoop" % "hadoop-client" % "2.4.1" % "provided"
+  "org.apache.hadoop" % "hadoop-client" % "2.6.0" % "provided"
 )
 
 scalaVersion := "2.10.4"

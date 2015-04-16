@@ -6,7 +6,7 @@ import org.specs2.Specification
 import MovingWindowPartitioning.IntervalSets
 import PartitionLocation.EnumVal
 import org.apache.spark.{SparkContext, LocalSparkContext, RangePartitioning, SharedSparkContext}
-import org.apache.spark.rdd.{RDD, RDD2}
+import org.apache.spark.rdd.RDD
 
 // Declare outside test class to avoid serialisation due to closure
 object Container {
@@ -145,7 +145,7 @@ class MovingWindowPartitioningSuite extends FunSuite with SharedSparkContext wit
     val rdd: RDD[(Int, Unit)] = rdd1(20)
     val rdd2 = MovingWindowPartitioning.movingWindowPartitioned[Int,Unit,(Int,Unit)](rdd,6,5,9)
 
-    import RDD2._
+    import Spream._
 
       // PartitionedSeriesKey[K]
     val rdda = rdd2.filterByRange2(10,20)

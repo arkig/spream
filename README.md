@@ -19,10 +19,11 @@ partitions (and without resorting to buffered queues, `runLog`, etc).
 - Run `scalaz.stream.Process1[I,O]` over partitions.
 - Small library of `scalaz.stream.Process1[I,O]`s that handle partitioning information for you when 
 computing over moving windows. 
+- Optimisations for selecting sub-series (`import spream.Spream._` and then you can use `rdd.filterByRange2(...)`) 
 
 The result is that you can run distributed moving window computations on big data on a cluster, almost as easily as if
 you were doing it on small data on one node. Hence, it's easy to scale out certain types of processing 
-already written in `scalaz.stream`.  
+already written in `scalaz.stream`. You can also chop up and select sub-sequences of series efficiently.  
 
 The [integration tests](src/test/scala/spream/IntegrationSuite.scala) provide some examples. 
 
@@ -31,16 +32,24 @@ The [integration tests](src/test/scala/spream/IntegrationSuite.scala) provide so
 ## Programming Tips
 
 - Note that `scalaz.stream.Process[Task,O]`s are not serializable and they do not need to be serialized for
-this to work. If you code it correctly they get instantiated on the worker. If you don't, you get an exception.
-- You now have two options to map, flatMap, etc over an RDD - as part of the `Processor` running in the 
-partitions or on the RDD itself. Prefer the former because it should prevent an additional pass.
-- Try to load data into your RDD so that it is already sorted.  
+this to work. If you code it correctly they get instantiated on the worker. If you don't, you get an exception. 
+In contrast, note that `Process1`s are serializable, so you can instantiate them on the driver (though I find that 
+is a little less readable in most cases).  
+- You now have two options to map, flatMap, etc over an RDD - as part of the `Process`or running in the 
+partitions or on the RDD itself. Prefer the former because it should(?) prevent an additional pass.
+- Try to load data into your RDD so that it is already sorted. For example, take advantage of the fact that
+partitions have a fixed order. This will save you a `sortBy`.    
+- Preserve the partitioner when you run a `process1 p` that does not change key ordering (the usual case when
+stream processing) over a series partitioned RDD, e.g. 
+`val rdd2 = rdd.mapPartitions(IteratorConversions.process1ToIterators(p),true)` -- note the `true`. 
+This will enable more efficient range queries (i.e. `rdd2.filterByRange2(...)`) on the result. 
 
 ## Nice to have...
 
 - A specific RDD subtype for such window partitioned data (better type safety, etc). 
-- Better Spark integration - for example, speeding up filtering, etc using the bounds in the partitions (i.e. in 
-a similar way to `RangePartitioner`). 
+- Better Spark integration - for example, the current `RangePartitioner` in Spark is not written in an extensible way. 
+This does not allow the `spream.PartitionedSeriesPartitioner` to be implemented as a subtype. This in turn makes it 
+trickier to integrate optimisations. 
   
 ## Limitations
 
