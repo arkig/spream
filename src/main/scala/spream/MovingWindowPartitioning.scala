@@ -156,6 +156,8 @@ object MovingWindowPartitioning {
 
 class PartitionedSeriesPartitioner[K : Ordering : ClassTag](val rangeBounds : Array[K], val ascending : Boolean) extends Partitioner { //RangePartitioner[K,Unit](rangeBounds.length+1,null,true) {
 
+  require(ascending,"Only ascending is completely supported at this stage")
+
   private var ordering = implicitly[Ordering[K]]
 
   override def numPartitions: Int = rangeBounds.length + 1
